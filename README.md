@@ -1,8 +1,9 @@
 # CNA_gbn_sr
 
-### install and configure gcc
+### Download gcc
     https://www.mingw-w64.org/
-    unzip and set system variable.
+### Configure gcc
+    unzip and add directory to system variable 'PATH'.
 
-### run gcc command
+### Run gcc command
     gcc -Wall -ansi -pedantic -o sr emulator.c sr.c
