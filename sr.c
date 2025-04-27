@@ -23,8 +23,7 @@ int ComputeChecksum(struct pkt packet)
   int checksum = 0;
   int i;
 
-  checksum = packet.seqnum;
-  checksum += packet.acknum;
+  checksum = packet.seqnum + packet.acknum;
   for ( i=0; i<20; i++ ) 
     checksum += (int)(packet.payload[i]);
 
@@ -68,7 +67,7 @@ void A_output(struct msg message)
     sendpkt.checksum = ComputeChecksum(sendpkt); 
 
     /* put packet in window buffer */
-    pos = (windowbase + windowcount) % WINDOWSIZE;
+    pos = sendpkt.seqnum % WINDOWSIZE;
     buffer[pos] = sendpkt;
     ack_received[pos] = false;
     windowcount++;
@@ -101,7 +100,6 @@ void A_input(struct pkt packet)
 {
   int acknum;
   int relative_pos;
-  int i;
 
   /* if received ACK is not corrupted */ 
   if (!IsCorrupted(packet)) {
@@ -111,27 +109,17 @@ void A_input(struct pkt packet)
 
     /* check if ACK in window */
     acknum = packet.acknum;
+    relative_pos = acknum % WINDOWSIZE;
         
-    if (windowbase <= acknum) {
-        relative_pos = acknum - windowbase;
-    }
-    else {
-        relative_pos = SEQSPACE - windowbase + acknum;
-    }
-        
-    if (relative_pos < WINDOWSIZE) {
+    if (!ack_received[relative_pos]) {
         new_ACKs++;
         ack_received[relative_pos] = true;
 
 	      /* slide window by the number of packets ACKed */
-        while (windowcount > 0 && ack_received[0]) {
-            /* window slide */
-            for (i=0; i<WINDOWSIZE-1; i++) {
-                buffer[i] = buffer[i+1];
-                ack_received[i] = ack_received[i+1];
-            }
-            windowbase = (windowbase + 1) % SEQSPACE;
-            windowcount--;
+        while (windowcount > 0 && ack_received[windowbase % WINDOWSIZE]) {
+          ack_received[windowbase % WINDOWSIZE] = false;
+          windowbase = (windowbase + 1) % SEQSPACE;
+          windowcount--;
         }
         
 	    /* start timer again if there are still more unacked packets in window */
@@ -140,6 +128,7 @@ void A_input(struct pkt packet)
           starttimer(A, RTT);
 
     }
+    total_ACKs_received++;
   }
   else 
     if (TRACE > 0)
@@ -149,15 +138,18 @@ void A_input(struct pkt packet)
 /* called when A's timer goes off */
 void A_timerinterrupt(void)
 {
+  int i;
   if (TRACE > 0)
-    printf("----A: time out,resend packets!\n");
+    printf("----A: time out,resend unacked packets!\n");
 
   /* only resend the first unacked pkt */
-  if (windowcount > 0 && !ack_received[0]) {
-    tolayer3(A,buffer[0]);
-    packets_resent++;
-    starttimer(A,RTT);
+  for (i = 0; i < WINDOWSIZE; i++) {
+    if (!ack_received[i]) {
+        tolayer3(A, buffer[i]);
+        packets_resent++;
+    }
   }
+  starttimer(A, RTT);
 }       
 
 
@@ -192,7 +184,7 @@ void B_input(struct pkt packet)
   int relative_pos;
   int i;
 
-  /* if not corrupted and received packet is in order */
+  /* if not corrupted and recvd pkt is in order */
   if  (!IsCorrupted(packet)){
     if (TRACE > 0)
       printf("----B: packet %d is correctly received, send ACK!\n",packet.seqnum);
@@ -202,27 +194,21 @@ void B_input(struct pkt packet)
 
     /* pkt in window and not recvd before */
     if (relative_pos < WINDOWSIZE) {
-      if (!packet_received[relative_pos]) {
-          packet_received[relative_pos] = true;
-          recv_buffer[relative_pos] = packet;
+      if (!packet_received[seqnum % WINDOWSIZE]) {
+          recv_buffer[seqnum % WINDOWSIZE] = packet;
+          packet_received[seqnum % WINDOWSIZE] = true;
+          packets_received++;
           
           /* pkt in order */
-          while (packet_received[0]) {
-              tolayer5(B, recv_buffer[0].payload);
-              packets_received++;
-              
-              /* window slide */
-              for (i=0; i<WINDOWSIZE-1; i++) {
-                  recv_buffer[i] = recv_buffer[i+1];
-                  packet_received[i] = packet_received[i+1];
-              }
-              packet_received[WINDOWSIZE-1] = false;
-              expectedseqnum = (expectedseqnum + 1) % SEQSPACE;
+          while (packet_received[expectedseqnum % WINDOWSIZE]) {
+            tolayer5(B, recv_buffer[expectedseqnum % WINDOWSIZE].payload);
+            packet_received[expectedseqnum % WINDOWSIZE] = false;
+            expectedseqnum = (expectedseqnum + 1) % SEQSPACE;
           }
       }
     }
-    /* send ACK, expect seqnum - 1 */
-    sendpkt.acknum = (expectedseqnum - 1 + SEQSPACE) % SEQSPACE;
+    /* send seqnum of recvd pkt */
+    sendpkt.acknum = seqnum;
   }
   else {
     /* packet is corrupted resend last ACK */
@@ -237,7 +223,7 @@ void B_input(struct pkt packet)
     
   /* we don't have any data to send.  fill payload with 0's */
   for ( i=0; i<20 ; i++ ) 
-  sendpkt.payload[i] = '0';  
+    sendpkt.payload[i] = '0';  
 
   /* computer checksum */
   sendpkt.checksum = ComputeChecksum(sendpkt); 
